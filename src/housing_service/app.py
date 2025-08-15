@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import joblib
 import pandas as pd
@@ -43,12 +43,13 @@ def _load_model_and_features(model_dir: Path) -> tuple[RegressorMixin, list[str]
             f"Model artifacts not found in {model_dir}. "
             "Expected 'model.pkl' and 'model_features.json'"
         )
-    model = joblib.load(model_path)
+    model = cast(RegressorMixin, joblib.load(model_path))
     with open(feats_path, "r") as f:
-        features = json.load(f)
-    if not isinstance(features, list):
+        features_obj = json.load(f)
+    if not isinstance(features_obj, list) or not all(isinstance(x, str) for x in features_obj):
         raise ValueError("model_features.json must be a JSON list of feature names")
-    return model, features  # type: ignore[return-value]
+    features: list[str] = features_obj
+    return model, features
 
 
 def _load_demographics(csv_path: Path) -> pd.DataFrame:
