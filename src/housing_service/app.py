@@ -92,7 +92,7 @@ app = FastAPI(title="Housing Price Service", version="0.1.0")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
 
-
+# TODO: PENDING ADD MODEL TRAINED (ENDPOINT NOT WORKING YET)
 @app.post("/v1/predict", response_model=PredictResponse)
 def predict(req: PredictRequest) -> PredictResponse:
     try:
