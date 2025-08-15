@@ -1,14 +1,10 @@
 import json
 import pathlib
 import pickle
-from typing import List
-from typing import Tuple
+from typing import List, Tuple
 
 import pandas
-from sklearn import model_selection
-from sklearn import neighbors
-from sklearn import pipeline
-from sklearn import preprocessing
+from sklearn import model_selection, neighbors, pipeline, preprocessing
 
 SALES_PATH = "data/kc_house_data.csv"  # path to CSV with home sale data
 DEMOGRAPHICS_PATH = "data/kc_house_data.csv"  # path to CSV with demographics
