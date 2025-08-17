@@ -44,6 +44,8 @@ dev = [
   "pre-commit==3.8.0",
   "types-requests==2.32.0.20240712",
   "types-python-dateutil==2.9.0.20240316",
+  "matplotlib",
+  "seaborn",
 ]
 
 [tool.setuptools]
@@ -67,6 +69,7 @@ skip = ["model", ".venv", "venv", "build", "dist"]
 minversion = "8.0"
 addopts = "-q"
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 # flake8 prefers setup.cfg/.flake8; keeping minimal here for editors that read pyproject
 [tool.flake8]
