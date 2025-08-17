@@ -15,38 +15,47 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, List, Optional, Union
 
 import joblib
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer
 from pydantic import BaseModel, Field, field_validator, ConfigDict
-from sklearn.base import RegressorMixin
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+from .logger import setup_logger
 
 # Configuration
-MODEL_DIR = Path(os.getenv("MODEL_DIR", "model"))
-DEMO_CSV = Path(os.getenv("DEMOGRAPHICS_CSV", "data/zipcode_demographics.csv"))
-API_VERSION = "1.0.0"
+MODEL_DIR = os.getenv("MODEL_DIR", "model")
+DEMOGRAPHICS_CSV = os.getenv("DEMOGRAPHICS_CSV", "data/zipcode_demographics.csv")
+DEFAULT_MODEL_VERSION = os.getenv("DEFAULT_MODEL_VERSION", "v2")
 
-# Security
-security = HTTPBearer(auto_error=False)
+# Initialize logger
+logger = setup_logger(__name__)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Housing Price Prediction API",
+    description="RESTful API for predicting housing prices with demographic data integration",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+
+# Add CORS middleware for cross-origin requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
+# Pydantic Models
 class HouseFeatures(BaseModel):
-    """House features for prediction (excluding demographic data).
-    
-    All demographic data is merged internally based on zipcode.
-    Input should only contain house-specific features.
-    """
+    """House features for prediction (excluding demographic data)."""
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     
     bedrooms: int = Field(..., ge=0, le=50, description="Number of bedrooms")
@@ -65,21 +74,10 @@ class HouseFeatures(BaseModel):
         if not v.isdigit():
             raise ValueError("zipcode must contain only digits")
         return v
-    
-    @field_validator("sqft_above", "sqft_basement")
-    @classmethod
-    def validate_sqft_consistency(cls, v: int, info) -> int:
-        """Validate square footage consistency."""
-        if info.data.get("sqft_living") and v > info.data["sqft_living"]:
-            raise ValueError("sqft_above/sqft_basement cannot exceed sqft_living")
-        return v
 
 
 class MinimalHouseFeatures(BaseModel):
-    """Minimal house features for basic prediction.
-    
-    This endpoint requires only the most essential features for prediction.
-    """
+    """Minimal house features for basic prediction."""
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     
     bedrooms: int = Field(..., ge=0, le=50, description="Number of bedrooms")
@@ -100,7 +98,7 @@ class PredictRequest(BaseModel):
     """Request model for batch predictions."""
     model_config = ConfigDict(extra="forbid")
     
-    records: List[HouseFeatures] = Field(
+    records: List[Dict[str, Any]] = Field(
         ..., min_length=1, max_length=1000, description="List of house records to predict"
     )
 
@@ -114,23 +112,16 @@ class MinimalPredictRequest(BaseModel):
     )
 
 
-class PredictionResult(BaseModel):
-    """Individual prediction result."""
-    prediction: float = Field(..., description="Predicted house price in USD")
-    confidence_score: Optional[float] = Field(None, description="Model confidence score")
-    zipcode: str = Field(..., description="Zipcode for this prediction")
-
-
 class PredictResponse(BaseModel):
     """Response model for predictions."""
     model_config = ConfigDict(extra="forbid")
     
-    predictions: List[PredictionResult] = Field(..., description="List of predictions")
-    model_version: Optional[str] = Field(None, description="Model version used")
+    predictions: List[float] = Field(..., description="List of predicted prices")
+    model_version: str = Field(..., description="Model version used")
     model_type: str = Field(..., description="Type of model used")
     n_records: int = Field(..., description="Number of records processed")
-    processing_time_ms: float = Field(..., description="Processing time in milliseconds")
-    
+    feature_count: int = Field(..., description="Number of features used")
+
 
 class HealthResponse(BaseModel):
     """Health check response."""
@@ -141,82 +132,85 @@ class HealthResponse(BaseModel):
 
 
 class ModelService:
-    """Singleton service for model and demographics data management."""
+    """Singleton service for model and demographics loading with multi-version support."""
     
-    def __init__(self):
-        self._model: Optional[RegressorMixin] = None
-        self._features: Optional[List[str]] = None
-        self._demographics: Optional[pd.DataFrame] = None
-        self._model_version: Optional[str] = None
-        self._model_type: Optional[str] = None
+    _instance = None
+    _models = {}  # Cache for multiple model versions
+    _features = {}  # Cache for multiple feature sets
+    _demographics = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def load_model(self, model_dir: str, version: str = "v2") -> tuple[Any, List[str]]:
+        """Load model and features with caching and version support."""
+        cache_key = f"{model_dir}_{version}"
         
-    def load_model_and_features(self, model_dir: Path) -> tuple[RegressorMixin, List[str]]:
-        """Load model and features with caching."""
-        if self._model is None or self._features is None:
-            logger.info(f"Loading model from {model_dir}")
-            model_path = model_dir / "model.pkl"
-            feats_path = model_dir / "model_features.json"
+        if cache_key not in self._models or cache_key not in self._features:
+            version_dir = Path(model_dir) / version
+            model_path = version_dir / "model.pkl"
+            features_path = version_dir / "model_features.json"
             
-            if not model_path.exists() or not feats_path.exists():
-                raise FileNotFoundError(
-                    f"Model artifacts not found in {model_dir}. "
-                    "Expected 'model.pkl' and 'model_features.json'"
-                )
+            if not model_path.exists():
+                raise FileNotFoundError(f"Model v{version} not found at {model_path}")
+            if not features_path.exists():
+                raise FileNotFoundError(f"Features v{version} not found at {features_path}")
             
-            self._model = cast(RegressorMixin, joblib.load(model_path))
+            logger.info(f"Loading model version {version} from {version_dir}")
+            self._models[cache_key] = joblib.load(model_path)
             
-            with open(feats_path, "r") as f:
-                features_obj = json.load(f)
-            if not isinstance(features_obj, list) or not all(isinstance(x, str) for x in features_obj):
-                raise ValueError("model_features.json must be a JSON list of feature names")
-            
-            self._features = features_obj
-            self._model_version = self._detect_version(model_dir)
-            self._model_type = type(self._model).__name__
-            
-            logger.info(f"Model loaded successfully: {self._model_type}, version: {self._model_version}")
-            
-        return self._model, self._features
+            with open(features_path, 'r') as f:
+                self._features[cache_key] = json.load(f)
+        
+        return self._models[cache_key], self._features[cache_key]
     
-    def load_demographics(self, csv_path: Path) -> pd.DataFrame:
+    def load_demographics(self, demographics_path: str) -> pd.DataFrame:
         """Load demographics data with caching."""
         if self._demographics is None:
-            logger.info(f"Loading demographics from {csv_path}")
-            if not csv_path.exists():
-                raise FileNotFoundError(f"Demographics CSV not found: {csv_path}")
+            if not Path(demographics_path).exists():
+                raise FileNotFoundError(f"Demographics not found at {demographics_path}")
             
-            df = pd.read_csv(csv_path, dtype={"zipcode": str})
-            if "zipcode" not in df.columns:
-                raise ValueError("Demographics CSV must contain 'zipcode' column")
-            
-            self._demographics = df.set_index("zipcode")
-            logger.info(f"Demographics loaded: {len(self._demographics)} zipcodes")
-            
+            logger.info(f"Loading demographics from {demographics_path}")
+            self._demographics = pd.read_csv(demographics_path, dtype={"zipcode": str})
+        
         return self._demographics
     
-    def _detect_version(self, model_dir: Path) -> Optional[str]:
-        """Detect model version from VERSION file."""
-        version_file = model_dir / "VERSION"
-        if version_file.exists():
-            return version_file.read_text().strip() or None
-        return None
-    
-    @property
-    def model_version(self) -> Optional[str]:
-        """Get current model version."""
-        return self._model_version
-    
-    @property
-    def model_type(self) -> Optional[str]:
-        """Get current model type."""
-        return self._model_type
-    
+    def get_available_versions(self, model_dir: str) -> List[str]:
+        """Get list of available model versions."""
+        model_path = Path(model_dir)
+        if not model_path.exists():
+            return []
+        
+        versions = []
+        for item in model_path.iterdir():
+            if item.is_dir() and (item / "model.pkl").exists():
+                versions.append(item.name)
+        
+        return sorted(versions)
+
+    def get_model_metadata(self, model_dir: str, version: str = "v2") -> Dict[str, Any]:
+        """Get model metadata from versioned directory."""
+        try:
+            version_dir = Path(model_dir) / version
+            metadata_file = version_dir / "model_metadata.json"
+            
+            if metadata_file.exists():
+                with open(metadata_file, 'r') as f:
+                    metadata = json.load(f)
+                return metadata
+            
+            return {"version": version, "model_type": "Unknown"}
+        except Exception:
+            return {"version": version, "model_type": "Unknown"}   
+
     @property
     def is_loaded(self) -> bool:
         """Check if model and demographics are loaded."""
         return (
-            self._model is not None 
-            and self._features is not None 
+            self._models 
+            and self._features 
             and self._demographics is not None
         )
 
@@ -231,14 +225,10 @@ def get_model_service() -> ModelService:
     return model_service
 
 
-
-
-
-def _prepare_features(
-    records: List[Union[HouseFeatures, MinimalHouseFeatures]], 
+def prepare_features(
+    records: List[Dict[str, Any]], 
     demo_df: pd.DataFrame, 
-    features: List[str],
-    is_minimal: bool = False
+    features: List[str]
 ) -> pd.DataFrame:
     """Prepare features for prediction by merging house data with demographics.
     
@@ -246,7 +236,6 @@ def _prepare_features(
         records: List of house feature records
         demo_df: Demographics DataFrame indexed by zipcode
         features: Required model features
-        is_minimal: Whether this is for minimal features endpoint
         
     Returns:
         DataFrame with all required features for prediction
@@ -255,27 +244,12 @@ def _prepare_features(
         ValueError: If required features are missing or data is invalid
     """
     # Convert Pydantic models to dictionaries
-    rows = [record.model_dump() for record in records]
+    rows = records
     base_df = pd.DataFrame(rows)
     
     # Validate zipcode column exists
     if "zipcode" not in base_df.columns:
         raise ValueError("Input rows must include 'zipcode'")
-    
-    # For minimal features, add default values for missing house features
-    if is_minimal:
-        # Add default values for missing house features required by the model
-        house_features = ["sqft_lot", "floors", "sqft_above", "sqft_basement"]
-        for feature in house_features:
-            if feature not in base_df.columns:
-                if feature == "sqft_lot":
-                    base_df[feature] = base_df["sqft_living"] * 2  # Reasonable default
-                elif feature == "floors":
-                    base_df[feature] = 1.0  # Default to single story
-                elif feature == "sqft_above":
-                    base_df[feature] = base_df["sqft_living"]  # Assume no basement
-                elif feature == "sqft_basement":
-                    base_df[feature] = 0  # Assume no basement
     
     # Merge with demographics data
     merged = base_df.merge(
@@ -309,39 +283,23 @@ def _prepare_features(
     return X
 
 
-
-
-
 # FastAPI app initialization with proper configuration
-app = FastAPI(
-    title="Housing Price Prediction API",
-    description="RESTful API for predicting house prices using machine learning",
-    version=API_VERSION,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json"
-)
-
-# Add CORS middleware for cross-origin requests
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize model and demographics data on startup."""
+    """Initialize services on startup."""
     try:
-        service = get_model_service()
-        service.load_model_and_features(MODEL_DIR)
-        service.load_demographics(DEMO_CSV)
-        logger.info("API startup completed successfully")
+        logger.info("Starting Housing Price Prediction API...")
+        
+        # Pre-load default model and demographics for faster first requests
+        model_service.load_model(MODEL_DIR, DEFAULT_MODEL_VERSION)
+        model_service.load_demographics(DEMOGRAPHICS_CSV)
+        
+        available_versions = model_service.get_available_versions(MODEL_DIR)
+        logger.info(f"✅ Model and demographics loaded successfully. Available versions: {available_versions}")
     except Exception as e:
-        logger.error(f"Failed to initialize API: {e}")
+        logger.warning(f"⚠️  Warning: Could not pre-load model: {e}")
         raise
 
 
@@ -352,190 +310,170 @@ def health(service: ModelService = Depends(get_model_service)) -> HealthResponse
     Returns:
         HealthResponse: Current service status and model information
     """
+    try:
+        # Try to load model and demographics to verify service health
+        service.load_model(MODEL_DIR, DEFAULT_MODEL_VERSION)
+        service.load_demographics(DEMOGRAPHICS_CSV)
+        is_healthy = service.is_loaded
+    except Exception:
+        is_healthy = False
+    
     return HealthResponse(
-        status="healthy" if service.is_loaded else "unhealthy",
-        version=API_VERSION,
-        model_loaded=service._model is not None,
+        status="healthy" if is_healthy else "unhealthy",
+        version="2.0.0",
+        model_loaded=service.is_loaded,
         demographics_loaded=service._demographics is not None
     )
 
 
 @app.post("/v1/predict", response_model=PredictResponse)
-def predict(
-    req: PredictRequest,
-    service: ModelService = Depends(get_model_service)
+async def predict(
+    request: PredictRequest,
+    model_version: str = Query(default=DEFAULT_MODEL_VERSION, description="Model version to use (v1, v2, etc.)")
 ) -> PredictResponse:
-    """Main prediction endpoint for house price prediction.
-    
-    Accepts house features (excluding demographic data) and returns predictions.
-    Demographic data is merged internally based on zipcode.
-    
-    Args:
-        req: Request containing list of house feature records
-        service: Injected model service
-        
-    Returns:
-        PredictResponse: Predictions with metadata
-        
-    Raises:
-        HTTPException: For various error conditions
-    """
-    import time
-    start_time = time.time()
-    
+    """Main prediction endpoint with demographic data integration and version support."""
     try:
+        logger.info(f"Processing prediction request with {len(request.records)} records using model {model_version}")
+        
         # Load model and demographics
-        model, features = service.load_model_and_features(MODEL_DIR)
-        demo_df = service.load_demographics(DEMO_CSV)
+        model, features = model_service.load_model(MODEL_DIR, model_version)
+        demographics = model_service.load_demographics(DEMOGRAPHICS_CSV)
         
-        # Prepare features and make predictions
-        X = _prepare_features(req.records, demo_df, features, is_minimal=False)
+        # Prepare features
+        X = prepare_features(request.records, demographics, features)
+        
+        # Make predictions
         predictions = model.predict(X)
+        logger.info(f"Generated {len(predictions)} predictions")
         
-        # Calculate processing time
-        processing_time = (time.time() - start_time) * 1000
-        
-        # Format response
-        prediction_results = [
-            PredictionResult(
-                prediction=float(pred),
-                confidence_score=None,  # KNN doesn't provide confidence scores
-                zipcode=record.zipcode
-            )
-            for pred, record in zip(predictions, req.records)
-        ]
-        
-        logger.info(f"Processed {len(req.records)} predictions in {processing_time:.2f}ms")
+        # Get model metadata
+        metadata = model_service.get_model_metadata(MODEL_DIR, model_version)
         
         return PredictResponse(
-            predictions=prediction_results,
-            model_version=service.model_version,
-            model_type=service.model_type or "Unknown",
-            n_records=len(req.records),
-            processing_time_ms=processing_time
+            predictions=[float(pred) for pred in predictions],
+            model_version=metadata.get("version", model_version),
+            model_type=metadata.get("model_type", "Unknown"),
+            n_records=len(request.records),
+            feature_count=len(features)
         )
         
     except FileNotFoundError as e:
-        logger.error(f"Model artifacts not found: {e}")
+        logger.error(f"Model service unavailable: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Model service unavailable: {str(e)}"
         )
     except ValueError as e:
-        logger.warning(f"Invalid input data: {e}")
+        logger.error(f"Invalid input data: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid input: {str(e)}"
+            detail=f"Invalid input data: {str(e)}"
         )
     except Exception as e:
-        logger.error(f"Unexpected error during prediction: {e}")
+        logger.error(f"Prediction failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error during prediction"
+            detail=f"Prediction failed: {str(e)}"
         )
 
 
 @app.post("/v1/predict-minimal", response_model=PredictResponse)
-def predict_minimal(
-    req: MinimalPredictRequest,
-    service: ModelService = Depends(get_model_service)
+async def predict_minimal(
+    request: MinimalPredictRequest,
+    model_version: str = Query(default=DEFAULT_MODEL_VERSION, description="Model version to use (v1, v2, etc.)")
 ) -> PredictResponse:
-    """Bonus endpoint for minimal feature prediction.
-    
-    Accepts only essential house features and provides reasonable defaults
-    for missing features required by the model.
-    
-    Args:
-        req: Request containing list of minimal house feature records
-        service: Injected model service
-        
-    Returns:
-        PredictResponse: Predictions with metadata
-        
-    Raises:
-        HTTPException: For various error conditions
-    """
-    import time
-    start_time = time.time()
-    
+    """Minimal features prediction endpoint with intelligent defaults and version support."""
     try:
+        logger.info(f"Processing minimal prediction request with {len(request.records)} records using model {model_version}")
+        
         # Load model and demographics
-        model, features = service.load_model_and_features(MODEL_DIR)
-        demo_df = service.load_demographics(DEMO_CSV)
+        model, features = model_service.load_model(MODEL_DIR, model_version)
+        demographics = model_service.load_demographics(DEMOGRAPHICS_CSV)
         
-        # Prepare features with defaults for missing house features
-        X = _prepare_features(req.records, demo_df, features, is_minimal=True)
+        # Convert minimal request to full format with defaults
+        full_records = []
+        for record in request.records:
+            full_record = {
+                "bedrooms": record.bedrooms,
+                "bathrooms": record.bathrooms,
+                "sqft_living": record.sqft_living,
+                "zipcode": record.zipcode,
+                # Intelligent defaults based on typical values
+                "sqft_lot": 7500,  # Median lot size
+                "floors": 1.0,
+                "sqft_above": record.sqft_living,  # Assume no basement
+                "sqft_basement": 0
+            }
+            full_records.append(full_record)
+        
+        # Prepare features
+        X = prepare_features(full_records, demographics, features)
+        
+        # Make predictions
         predictions = model.predict(X)
+        logger.info(f"Generated {len(predictions)} minimal predictions")
         
-        # Calculate processing time
-        processing_time = (time.time() - start_time) * 1000
-        
-        # Format response
-        prediction_results = [
-            PredictionResult(
-                prediction=float(pred),
-                confidence_score=None,  # KNN doesn't provide confidence scores
-                zipcode=record.zipcode
-            )
-            for pred, record in zip(predictions, req.records)
-        ]
-        
-        logger.info(f"Processed {len(req.records)} minimal predictions in {processing_time:.2f}ms")
+        # Get model metadata
+        metadata = model_service.get_model_metadata(MODEL_DIR, model_version)
         
         return PredictResponse(
-            predictions=prediction_results,
-            model_version=service.model_version,
-            model_type=service.model_type or "Unknown",
-            n_records=len(req.records),
-            processing_time_ms=processing_time
+            predictions=[float(pred) for pred in predictions],
+            model_version=metadata.get("version", model_version),
+            model_type=metadata.get("model_type", "Unknown"),
+            n_records=len(request.records),
+            feature_count=len(features)
         )
         
     except FileNotFoundError as e:
-        logger.error(f"Model artifacts not found: {e}")
+        logger.error(f"Model service unavailable: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Model service unavailable: {str(e)}"
         )
     except ValueError as e:
-        logger.warning(f"Invalid input data: {e}")
+        logger.error(f"Invalid input data: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid input: {str(e)}"
+            detail=f"Invalid input data: {str(e)}"
         )
     except Exception as e:
-        logger.error(f"Unexpected error during prediction: {e}")
+        logger.error(f"Prediction failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error during prediction"
+            detail=f"Prediction failed: {str(e)}"
         )
 
 
 @app.get("/v1/model-info")
-def model_info(service: ModelService = Depends(get_model_service)) -> Dict[str, Any]:
-    """Get information about the loaded model.
-    
-    Returns:
-        Dict containing model metadata and feature information
-    """
+async def get_model_info(
+    model_version: str = Query(default=DEFAULT_MODEL_VERSION, description="Model version to get info for")
+) -> Dict[str, Any]:
+    """Get information about the specified model version."""
     try:
-        model, features = service.load_model_and_features(MODEL_DIR)
-        demo_df = service.load_demographics(DEMO_CSV)
+        metadata = model_service.get_model_metadata(MODEL_DIR, model_version)
+        _, features = model_service.load_model(MODEL_DIR, model_version)
+        available_versions = model_service.get_available_versions(MODEL_DIR)
         
         return {
-            "model_type": service.model_type,
-            "model_version": service.model_version,
-            "n_features": len(features),
-            "features": features,
-            "house_features": ["bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors", "sqft_above", "sqft_basement"],
-            "demographic_features": [f for f in features if f not in ["bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors", "sqft_above", "sqft_basement"]],
-            "n_zipcodes": len(demo_df),
-            "api_version": API_VERSION
+            "model_version": metadata.get("version", model_version),
+            "model_type": metadata.get("model_type", "Unknown"),
+            "feature_count": len(features),
+            "features": features[:10],  # Show first 10 features
+            "available_versions": available_versions,
+            "default_version": DEFAULT_MODEL_VERSION,
+            "api_version": "2.0.0",
+            "endpoints": [
+                "/v1/predict",
+                "/v1/predict-minimal",
+                "/v1/model-info",
+                "/health"
+            ]
         }
     except Exception as e:
-        logger.error(f"Error getting model info: {e}")
+        logger.error(f"Failed to get model info: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model information unavailable"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get model info: {str(e)}"
         )
 
 
