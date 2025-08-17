@@ -1,6 +1,7 @@
 """
 Colored logging system following best practices.
 """
+
 import logging
 import os
 from datetime import datetime
@@ -46,7 +47,9 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
-def setup_logger(name: str = __name__, level: int | None = None, log_to_file: bool = False) -> logging.Logger:
+def setup_logger(
+    name: str = __name__, level: int | None = None, log_to_file: bool = False
+) -> logging.Logger:
     """Set up and configure a logger with colored output for the application.
 
     Args:
