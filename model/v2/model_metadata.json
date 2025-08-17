@@ -1,0 +1,24 @@
+{
+  "version": "2.0.0",
+  "model_type": "GradientBoostingRegressor",
+  "training_date": "2025-08-17T10:16:48.306746",
+  "evaluation_metrics": {
+    "train_r2": 0.880008899426316,
+    "test_r2": 0.8092496302501484,
+    "train_rmse": 98840.5975648449,
+    "test_rmse": 120163.46689721443,
+    "train_mae": 66297.86245348482,
+    "test_mae": 76921.7217696065,
+    "overfitting_r2": 0.0707592691761676,
+    "rmse_ratio": 1.215729870697924
+  },
+  "feature_count": 44,
+  "config": {
+    "data_dir": "data",
+    "model_dir": "model",
+    "random_state": 42,
+    "test_size": 0.2,
+    "cv_folds": 5,
+    "n_jobs": -1
+  }
+}
