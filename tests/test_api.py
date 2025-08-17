@@ -82,31 +82,33 @@ class APITester:
         print("❌ API service is not available")
         return False
     
-    def test_health_endpoint(self) -> bool:
-        """Test the health endpoint.
-        
-        Returns:
-            True if test passes, False otherwise
-        """
-        print("\n🔍 Testing health endpoint...")
+    def test_health_endpoint(self) -> Dict[str, Any]:
+        """Test the health check endpoint."""
+        print("🔍 Testing health endpoint...")
         
         try:
-            response = self.session.get(
-                f"{self.base_url}/health",
-                timeout=self.timeout
-            )
+            response = self.session.get(f"{self.base_url}/health", timeout=self.timeout)
+            response.raise_for_status()
             
-            if response.status_code == 200:
-                data = response.json()
-                print(f"✅ Health check passed: {data}")
-                return True
-            else:
-                print(f"❌ Health check failed: {response.status_code} - {response.text}")
-                return False
-                
+            result = response.json()
+            print(f"   ✅ Health check passed: {result['status']}")
+            print(f"   📊 Model loaded: {result['model_loaded']}")
+            print(f"   📊 Demographics loaded: {result['demographics_loaded']}")
+            
+            return {
+                "endpoint": "/health",
+                "status_code": response.status_code,
+                "response_time_ms": response.elapsed.total_seconds() * 1000,
+                "result": result
+            }
+            
         except Exception as e:
-            print(f"❌ Health check error: {e}")
-            return False
+            print(f"   ❌ Health check failed: {e}")
+            return {
+                "endpoint": "/health",
+                "status_code": getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None,
+                "error": str(e)
+            }
     
     def test_model_info_endpoint(self) -> bool:
         """Test the model info endpoint.
