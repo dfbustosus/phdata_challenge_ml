@@ -20,8 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy project metadata and install dependencies
+# Copy project metadata and source code
 COPY pyproject.toml README.md LICENSE /app/
+COPY src/ /app/src/
+
+# Install dependencies
 RUN pip install --upgrade pip && pip install .
 
 # Create non-root user
