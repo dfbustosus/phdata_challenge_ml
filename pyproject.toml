@@ -69,6 +69,7 @@ skip = ["model", ".venv", "venv", "build", "dist"]
 minversion = "8.0"
 addopts = "-q"
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 # flake8 prefers setup.cfg/.flake8; keeping minimal here for editors that read pyproject
 [tool.flake8]

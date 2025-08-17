@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
@@ -33,7 +34,33 @@ DEFAULT_MODEL_VERSION = os.getenv("DEFAULT_MODEL_VERSION", "v2")
 # Initialize logger
 logger = setup_logger(__name__)
 
+
 # Initialize FastAPI app
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage startup and shutdown events."""
+    logger.info("Starting Housing Price Prediction API...")
+    try:
+        model_service = get_model_service()  # Initialize the model service
+        logger.info("Model service initialized successfully.")
+
+        # Pre-load default model and demographics for faster first requests
+        model_service.load_model(MODEL_DIR, DEFAULT_MODEL_VERSION)
+        model_service.load_demographics(DEMOGRAPHICS_CSV)
+
+        available_versions = model_service.get_available_versions(MODEL_DIR)
+        logger.info(
+            (
+                "✅ Model and demographics loaded successfully. "
+                f"Available versions: {available_versions}"
+            )
+        )
+    except Exception as e:
+        logger.warning(f"⚠️  Warning: Could not pre-load model: {e}")
+    yield
+    logger.info("Shutting down API.")
+
+
 app = FastAPI(
     title="Housing Price Prediction API",
     description="RESTful API for predicting housing prices with demographic data integration",
@@ -41,6 +68,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware for cross-origin requests
@@ -119,7 +147,7 @@ class MinimalPredictRequest(BaseModel):
 class PredictResponse(BaseModel):
     """Response model for predictions."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
     predictions: List[float] = Field(..., description="List of predicted prices")
     model_version: str = Field(..., description="Model version used")
@@ -130,6 +158,8 @@ class PredictResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     """Health check response."""
+
+    model_config = ConfigDict(protected_namespaces=())
 
     status: str = Field(..., description="Service status")
     version: str = Field(..., description="API version")
@@ -352,31 +382,6 @@ def prepare_features(
         raise ValueError(f"NaN values found in features: {', '.join(nan_cols)}")
 
     return X
-
-
-# FastAPI app initialization with proper configuration
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup."""
-    try:
-        logger.info("Starting Housing Price Prediction API...")
-
-        # Pre-load default model and demographics for faster first requests
-        model_service.load_model(MODEL_DIR, DEFAULT_MODEL_VERSION)
-        model_service.load_demographics(DEMOGRAPHICS_CSV)
-
-        available_versions = model_service.get_available_versions(MODEL_DIR)
-        logger.info(
-            (
-                "✅ Model and demographics loaded successfully. "
-                f"Available versions: {available_versions}"
-            )
-        )
-    except Exception as e:
-        logger.warning(f"⚠️  Warning: Could not pre-load model: {e}")
-        raise
 
 
 @app.get("/health", response_model=HealthResponse)
