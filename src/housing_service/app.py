@@ -225,6 +225,43 @@ def get_model_service() -> ModelService:
     return model_service
 
 
+def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply the same feature engineering as the training pipeline."""
+    import numpy as np
+    
+    # Create a copy to avoid modifying original
+    df_eng = df.copy()
+    
+    # Feature ratios
+    df_eng['sqft_living_to_lot_ratio'] = df_eng['sqft_living'] / (df_eng['sqft_lot'] + 1)
+    df_eng['bathroom_to_bedroom_ratio'] = df_eng['bathrooms'] / (df_eng['bedrooms'] + 1)
+    df_eng['above_to_living_ratio'] = df_eng['sqft_above'] / (df_eng['sqft_living'] + 1)
+    df_eng['basement_to_living_ratio'] = df_eng['sqft_basement'] / (df_eng['sqft_living'] + 1)
+    
+    # Room density
+    df_eng['room_density'] = (df_eng['bedrooms'] + df_eng['bathrooms']) / (df_eng['sqft_living'] + 1)
+    
+    # Size categories (this creates categorical data that needs dummy encoding)
+    df_eng['size_category'] = pd.cut(df_eng['sqft_living'], 
+                                    bins=[0, 1000, 1500, 2000, 3000, float('inf')],
+                                    labels=[1, 2, 3, 4, 5])
+    
+    # Log transforms for skewed features (EXCLUDE TARGET VARIABLE)
+    skewed_features = ['sqft_living', 'sqft_lot']
+    for feature in skewed_features:
+        if feature in df_eng.columns:
+            df_eng[f'{feature}_log'] = np.log1p(df_eng[feature])
+    
+    # Handle categorical variables the same way as training
+    categorical_cols = df_eng.select_dtypes(include=['object', 'category']).columns
+    if len(categorical_cols) > 0:
+        logger.info(f"Found categorical columns before dummy encoding: {list(categorical_cols)}")
+        df_eng = pd.get_dummies(df_eng, columns=categorical_cols, drop_first=True)
+        logger.info(f"After dummy encoding: {list(df_eng.columns)}")
+    
+    return df_eng
+
+
 def prepare_features(
     records: List[Dict[str, Any]], 
     demo_df: pd.DataFrame, 
@@ -251,33 +288,63 @@ def prepare_features(
     if "zipcode" not in base_df.columns:
         raise ValueError("Input rows must include 'zipcode'")
     
+    # Ensure zipcode is string type for proper merging
+    base_df["zipcode"] = base_df["zipcode"].astype(str)
+    
     # Merge with demographics data
     merged = base_df.merge(
-        demo_df.reset_index(), 
+        demo_df, 
         how="left", 
         on="zipcode", 
         validate="m:1"
     )
     
     # Handle missing demographics with median imputation instead of zeros
-    demo_columns = demo_df.columns.tolist()
+    # Exclude zipcode from median imputation as it's categorical
+    demo_columns = [col for col in demo_df.columns.tolist() if col != 'zipcode']
     for col in demo_columns:
-        if col in merged.columns:
+        if col in merged.columns and merged[col].dtype in ['float64', 'int64']:
             median_val = demo_df[col].median()
             merged[col] = merged[col].fillna(median_val)
             logger.debug(f"Filled {merged[col].isna().sum()} missing values in {col} with median {median_val}")
     
-    # Ensure all required features exist
-    missing = [c for c in features if c not in merged.columns]
+    # Apply the same feature engineering as training pipeline
+    merged = apply_feature_engineering(merged)
+    
+    # Drop zipcode column as it's only used for merging, not prediction
+    if 'zipcode' in merged.columns:
+        merged = merged.drop(columns=['zipcode'])
+    
+    # Debug: Log what we have after feature engineering
+    logger.info(f"After feature engineering - columns: {list(merged.columns)}")
+    logger.info(f"Required model features: {features}")
+    
+    # Ensure all required features exist (excluding zipcode)
+    model_features = [f for f in features if f != 'zipcode']
+    missing = [c for c in model_features if c not in merged.columns]
     if missing:
+        logger.error(f"Missing required model features: {missing}")
+        logger.error(f"Available columns: {list(merged.columns)}")
         raise ValueError(f"Missing required model features: {', '.join(missing)}")
     
     # Select only the required features in the correct order
-    X = merged[features]
+    X = merged[model_features].copy()
+    
+    # Debug: Log final feature matrix
+    logger.info(f"Final feature matrix shape: {X.shape}")
+    logger.info(f"Final feature columns: {list(X.columns)}")
+    logger.info(f"Data types: {X.dtypes.to_dict()}")
+    
+    # Ensure all columns are numeric
+    for col in X.columns:
+        if X[col].dtype == 'object' or X[col].dtype.name == 'category':
+            logger.error(f"Found non-numeric column {col} with values: {X[col].unique()}")
+            raise ValueError(f"Non-numeric column found: {col}")
     
     # Final validation - check for any remaining NaN values
     if X.isna().any().any():
         nan_cols = X.columns[X.isna().any()].tolist()
+        logger.error(f"NaN values found in features: {nan_cols}")
         raise ValueError(f"NaN values found in features: {', '.join(nan_cols)}")
     
     return X
@@ -304,25 +371,21 @@ async def startup_event():
 
 
 @app.get("/health", response_model=HealthResponse)
-def health(service: ModelService = Depends(get_model_service)) -> HealthResponse:
-    """Health check endpoint.
-    
-    Returns:
-        HealthResponse: Current service status and model information
-    """
+async def health() -> HealthResponse:
+    """Health check endpoint."""
     try:
         # Try to load model and demographics to verify service health
-        service.load_model(MODEL_DIR, DEFAULT_MODEL_VERSION)
-        service.load_demographics(DEMOGRAPHICS_CSV)
-        is_healthy = service.is_loaded
+        model_service.load_model(MODEL_DIR, DEFAULT_MODEL_VERSION)
+        model_service.load_demographics(DEMOGRAPHICS_CSV)
+        is_healthy = model_service.is_loaded
     except Exception:
         is_healthy = False
     
     return HealthResponse(
         status="healthy" if is_healthy else "unhealthy",
         version="2.0.0",
-        model_loaded=service.is_loaded,
-        demographics_loaded=service._demographics is not None
+        model_loaded=model_service.is_loaded,
+        demographics_loaded=model_service._demographics is not None
     )
 
 
@@ -336,15 +399,45 @@ async def predict(
         logger.info(f"Processing prediction request with {len(request.records)} records using model {model_version}")
         
         # Load model and demographics
-        model, features = model_service.load_model(MODEL_DIR, model_version)
-        demographics = model_service.load_demographics(DEMOGRAPHICS_CSV)
+        try:
+            logger.info("Step 1: Loading model and demographics...")
+            model, features = model_service.load_model(MODEL_DIR, model_version)
+            demographics = model_service.load_demographics(DEMOGRAPHICS_CSV)
+            logger.info(f"Step 1 SUCCESS: Loaded model with {len(features)} features")
+        except Exception as e:
+            logger.error(f"Step 1 FAILED: {e}")
+            raise
         
         # Prepare features
-        X = prepare_features(request.records, demographics, features)
+        try:
+            logger.info("Step 2: Preparing features...")
+            logger.info(f"Input records: {request.records}")
+            X = prepare_features(request.records, demographics, features)
+            logger.info(f"Step 2 SUCCESS: Prepared features with shape {X.shape}")
+        except Exception as e:
+            logger.error(f"Step 2 FAILED: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise
+        
+        # Debug: Log exactly what we're passing to the model
+        logger.info(f"Step 3: About to call model.predict() with:")
+        logger.info(f"  X.shape: {X.shape}")
+        logger.info(f"  X.columns: {list(X.columns)}")
+        logger.info(f"  X.dtypes: {X.dtypes.to_dict()}")
+        logger.info(f"  Expected features: {features}")
+        logger.info(f"  Sample X values:\n{X.head()}")
         
         # Make predictions
-        predictions = model.predict(X)
-        logger.info(f"Generated {len(predictions)} predictions")
+        try:
+            logger.info("Step 3: Making predictions...")
+            predictions = model.predict(X)
+            logger.info(f"Step 3 SUCCESS: Generated {len(predictions)} predictions")
+        except Exception as e:
+            logger.error(f"Step 3 FAILED: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise
         
         # Get model metadata
         metadata = model_service.get_model_metadata(MODEL_DIR, model_version)
