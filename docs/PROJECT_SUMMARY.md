@@ -1,7 +1,7 @@
 # Housing Price Prediction API - Project Summary
 
 **Project Completion Date:** 2025-08-17  
-**Author:** ML Engineering Team  
+**Author:** David BU
 **Status:** ✅ COMPLETED
 
 ## Executive Summary

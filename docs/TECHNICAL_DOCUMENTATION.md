@@ -1,6 +1,6 @@
 # Housing Price Prediction API - Technical Documentation
 
-**Author:** ML Engineering Team  
+**Author:** David BU
 **Version:** 1.0.0  
 **Date:** 2025-08-17
 

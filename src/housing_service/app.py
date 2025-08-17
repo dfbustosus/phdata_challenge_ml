@@ -4,7 +4,7 @@ This module provides RESTful endpoints for housing price prediction using a trai
 machine learning model. The API accepts house features and merges demographic data
 internally based on zipcode.
 
-Author: ML Engineering Team
+Author: David BU
 Version: 1.0.0
 Date: 2025-08-17
 """
@@ -12,11 +12,10 @@ Date: 2025-08-17
 from __future__ import annotations
 
 import json
-import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, cast
 
 import joblib
 import pandas as pd
@@ -141,10 +140,10 @@ class HealthResponse(BaseModel):
 class ModelService:
     """Singleton service for model and demographics loading with multi-version support."""
 
-    _instance = None
-    _models = {}  # Cache for multiple model versions
-    _features = {}  # Cache for multiple feature sets
-    _demographics = None
+    _instance: Optional["ModelService"] = None
+    _models: Dict[str, Any] = {}  # Cache for multiple model versions
+    _features: Dict[str, List[str]] = {}  # Cache for multiple feature sets
+    _demographics: Optional[pd.DataFrame] = None
 
     def __new__(cls):
         if cls._instance is None:
@@ -206,7 +205,7 @@ class ModelService:
             if metadata_file.exists():
                 with open(metadata_file, "r") as f:
                     metadata = json.load(f)
-                return metadata
+                return cast(Dict[str, Any], metadata)
 
             return {"version": version, "model_type": "Unknown"}
         except Exception:
@@ -215,7 +214,7 @@ class ModelService:
     @property
     def is_loaded(self) -> bool:
         """Check if model and demographics are loaded."""
-        return self._models and self._features and self._demographics is not None
+        return bool(self._models) and bool(self._features) and self._demographics is not None
 
 
 # Global model service instance
@@ -307,7 +306,10 @@ def prepare_features(
             median_val = demo_df[col].median()
             merged[col] = merged[col].fillna(median_val)
             logger.debug(
-                f"Filled {merged[col].isna().sum()} missing values in {col} with median {median_val}"
+                (
+                    f"Filled {merged[col].isna().sum()} missing values in {col} "
+                    f"with median {median_val}"
+                )
             )
 
     # Apply the same feature engineering as training pipeline
@@ -367,7 +369,10 @@ async def startup_event():
 
         available_versions = model_service.get_available_versions(MODEL_DIR)
         logger.info(
-            f"✅ Model and demographics loaded successfully. Available versions: {available_versions}"
+            (
+                "✅ Model and demographics loaded successfully. "
+                f"Available versions: {available_versions}"
+            )
         )
     except Exception as e:
         logger.warning(f"⚠️  Warning: Could not pre-load model: {e}")
@@ -403,7 +408,10 @@ async def predict(
     """Main prediction endpoint with demographic data integration and version support."""
     try:
         logger.info(
-            f"Processing prediction request with {len(request.records)} records using model {model_version}"
+            (
+                f"Processing prediction request with {len(request.records)} records "
+                f"using model {model_version}"
+            )
         )
 
         # Load model and demographics
@@ -430,7 +438,7 @@ async def predict(
             raise
 
         # Debug: Log exactly what we're passing to the model
-        logger.info(f"Step 3: About to call model.predict() with:")
+        logger.info("Step 3: About to call model.predict() with:")
         logger.info(f"  X.shape: {X.shape}")
         logger.info(f"  X.columns: {list(X.columns)}")
         logger.info(f"  X.dtypes: {X.dtypes.to_dict()}")
@@ -488,7 +496,10 @@ async def predict_minimal(
     """Minimal features prediction endpoint with intelligent defaults and version support."""
     try:
         logger.info(
-            f"Processing minimal prediction request with {len(request.records)} records using model {model_version}"
+            (
+                f"Processing minimal prediction request with {len(request.records)} records "
+                f"using model {model_version}"
+            )
         )
 
         # Load model and demographics

@@ -5,7 +5,7 @@ Comprehensive ML Training Pipeline for Housing Price Prediction.
 This pipeline implements ML best practices including data cleaning, feature engineering,
 model selection, hyperparameter tuning, and comprehensive evaluation.
 
-Author: ML Engineering Team
+Author: David BU
 Version: 1.0.0
 Date: 2025-08-17
 """
@@ -19,15 +19,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn import (
-    ensemble,
-    feature_selection,
-    linear_model,
-    metrics,
-    model_selection,
-    pipeline,
-    preprocessing,
-)
+from sklearn import ensemble, linear_model, metrics, model_selection, pipeline, preprocessing
 
 warnings.filterwarnings("ignore")
 
@@ -115,7 +107,10 @@ class MLPipeline:
 
         removed = initial_count - len(df)
         print(
-            f"   Cleaned shape: {df.shape} ({removed} rows removed, {removed/initial_count*100:.1f}%)"
+            (
+                f"   Cleaned shape: {df.shape} ({removed} rows removed, "
+                f"{removed/initial_count*100:.1f}%)"
+            )
         )
 
         return df

@@ -6,7 +6,7 @@ This script evaluates the performance of the trained model to determine
 how well it will generalize to new data and whether it has appropriately
 fit the dataset.
 
-Author: ML Engineering Team
+Author: David BU
 Version: 1.0.0
 Date: 2025-08-17
 """
@@ -15,14 +15,13 @@ import json
 import pickle
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn import metrics, model_selection
-from sklearn.base import RegressorMixin
 from sklearn.inspection import permutation_importance
 
 # Suppress warnings for cleaner output
@@ -288,7 +287,10 @@ class ModelEvaluator:
         print("   📈 Top 10 Most Important Features:")
         for i, (_, row) in enumerate(importance_df.head(10).iterrows()):
             print(
-                f"      {i+1:2d}. {row['feature']:<25} {row['importance_mean']:8.0f} ± {row['importance_std']:6.0f}"
+                (
+                    f"      {i+1:2d}. {row['feature']:<25} "
+                    f"{row['importance_mean']:8.0f} ± {row['importance_std']:6.0f}"
+                )
             )
 
         return importance_df
@@ -310,7 +312,7 @@ class ModelEvaluator:
             "normality_p_value": None,  # Would need scipy.stats for Shapiro-Wilk test
         }
 
-        print(f"   📈 Residual Statistics:")
+        print("   📈 Residual Statistics:")
         print(f"      Mean: ${residual_stats['mean']:,.2f}")
         print(f"      Std Dev: ${residual_stats['std']:,.2f}")
         print(f"      Skewness: {residual_stats['skewness']:.4f}")
@@ -490,7 +492,7 @@ class ModelEvaluator:
         with open(output_path, "w") as f:
             json.dump(report_serializable, f, indent=2)
 
-        print(f"   ✅ Report saved successfully")
+        print("   ✅ Report saved successfully")
 
 
 def main():

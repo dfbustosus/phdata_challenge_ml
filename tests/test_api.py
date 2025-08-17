@@ -6,12 +6,11 @@ This script demonstrates the API functionality by submitting examples from
 data/future_unseen_examples.csv to both the main prediction endpoint and
 the minimal features endpoint.
 
-Author: ML Engineering Team
+Author: David BU
 Version: 1.0.0
 Date: 2025-08-17
 """
 
-import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -122,7 +121,7 @@ class APITester:
 
             if response.status_code == 200:
                 data = response.json()
-                print(f"✅ Model info retrieved successfully:")
+                print("✅ Model info retrieved successfully:")
                 print(f"   Model Type: {data.get('model_type')}")
                 print(f"   Model Version: {data.get('model_version')}")
                 print(f"   Number of Features: {data.get('n_features')}")
@@ -159,7 +158,7 @@ class APITester:
             if "zipcode" in record:
                 record["zipcode"] = str(int(record["zipcode"]))
 
-        return records
+        return list(records)
 
     def prepare_main_prediction_data(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Prepare data for the main prediction endpoint.
@@ -251,7 +250,7 @@ class APITester:
                 data = response.json()
                 predictions = data.get("predictions", [])
 
-                print(f"✅ Main prediction successful:")
+                print("✅ Main prediction successful:")
                 print(f"   Processed: {data.get('n_records')} records")
                 print(f"   Processing time: {data.get('processing_time_ms'):.2f}ms")
                 print(f"   Model type: {data.get('model_type')}")
@@ -260,7 +259,10 @@ class APITester:
                 # Show first few predictions
                 for i, pred in enumerate(predictions[:3]):
                     print(
-                        f"   Prediction {i+1}: ${pred['prediction']:,.2f} (zipcode: {pred['zipcode']})"
+                        (
+                            f"   Prediction {i+1}: ${pred['prediction']:,.2f} "
+                            f"(zipcode: {pred['zipcode']})"
+                        )
                     )
 
                 if len(predictions) > 3:
@@ -303,7 +305,7 @@ class APITester:
                 data = response.json()
                 predictions = data.get("predictions", [])
 
-                print(f"✅ Minimal prediction successful:")
+                print("✅ Minimal prediction successful:")
                 print(f"   Processed: {data.get('n_records')} records")
                 print(f"   Processing time: {data.get('processing_time_ms'):.2f}ms")
                 print(f"   Model type: {data.get('model_type')}")
@@ -312,7 +314,10 @@ class APITester:
                 # Show first few predictions
                 for i, pred in enumerate(predictions[:3]):
                     print(
-                        f"   Prediction {i+1}: ${pred['prediction']:,.2f} (zipcode: {pred['zipcode']})"
+                        (
+                            f"   Prediction {i+1}: ${pred['prediction']:,.2f} "
+                            f"(zipcode: {pred['zipcode']})"
+                        )
                     )
 
                 if len(predictions) > 3:
@@ -375,7 +380,10 @@ class APITester:
                     print(f"   ✅ {test_case['name']}: Correctly returned {response.status_code}")
                 else:
                     print(
-                        f"   ❌ {test_case['name']}: Expected {test_case['expected_status']}, got {response.status_code}"
+                        (
+                            f"   ❌ {test_case['name']}: "
+                            f"Expected {test_case['expected_status']}, got {response.status_code}"
+                        )
                     )
                     all_passed = False
 
