@@ -3,11 +3,12 @@
 Debug script to examine the model and understand the categorical conversion error.
 """
 
-import joblib
 import json
-import pandas as pd
-import numpy as np
 from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
 
 
 def debug_model():
